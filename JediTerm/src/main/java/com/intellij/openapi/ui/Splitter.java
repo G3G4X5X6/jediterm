@@ -151,6 +151,7 @@ public class Splitter extends JPanel implements Splittable {
    * @deprecated
    */
   @Override
+  @Deprecated
   public Component add(Component comp) {
     final int childCount = getComponentCount();
     LOG.assertTrue(childCount >= 1);

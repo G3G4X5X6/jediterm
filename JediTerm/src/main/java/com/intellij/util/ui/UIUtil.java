@@ -512,6 +512,7 @@ public class UIUtil extends DrawUtil {
     /**
      * @deprecated use com.intellij.util.ui.UIUtil#getTextFieldBackground()
      */
+    @Deprecated
     public static Color getActiveTextFieldBackgroundColor() {
         return getTextFieldBackground();
     }
@@ -546,6 +547,7 @@ public class UIUtil extends DrawUtil {
     /**
      * @deprecated use com.intellij.util.ui.UIUtil#getInactiveTextColor()
      */
+    @Deprecated
     public static Color getTextInactiveTextColor() {
         return getInactiveTextColor();
     }
@@ -786,6 +788,7 @@ public class UIUtil extends DrawUtil {
     /**
      * @deprecated use com.intellij.util.ui.UIUtil#getPanelBackground() instead
      */
+    @Deprecated
     public static Color getPanelBackgound() {
         return getPanelBackground();
     }
@@ -1285,6 +1288,7 @@ public class UIUtil extends DrawUtil {
      * @use JBColor.border()
      * @deprecated
      */
+    @Deprecated
     public static Color getBorderColor() {
         return isUnderDarcula() ? Gray._50 : BORDER_COLOR;
     }
@@ -1297,6 +1301,7 @@ public class UIUtil extends DrawUtil {
     /**
      * @deprecated use getBorderColor instead
      */
+    @Deprecated
     public static Color getBorderInactiveColor() {
         return getBorderColor();
     }
@@ -1304,6 +1309,7 @@ public class UIUtil extends DrawUtil {
     /**
      * @deprecated use getBorderColor instead
      */
+    @Deprecated
     public static Color getBorderActiveColor() {
         return getBorderColor();
     }
@@ -1311,6 +1317,7 @@ public class UIUtil extends DrawUtil {
     /**
      * @deprecated use getBorderColor instead
      */
+    @Deprecated
     public static Color getBorderSeparatorColor() {
         return getBorderColor();
     }
