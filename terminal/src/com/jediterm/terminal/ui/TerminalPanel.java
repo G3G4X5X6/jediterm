@@ -1,7 +1,5 @@
 package com.jediterm.terminal.ui;
 
-import com.google.common.base.Ascii;
-import com.google.common.collect.Lists;
 import com.jediterm.terminal.*;
 import com.jediterm.terminal.SubstringFinder.FindResult.FindItem;
 import com.jediterm.terminal.TextStyle.Option;
@@ -14,9 +12,12 @@ import com.jediterm.terminal.model.hyperlinks.LinkInfo;
 import com.jediterm.terminal.ui.settings.SettingsProvider;
 import com.jediterm.terminal.util.CharUtils;
 import com.jediterm.terminal.util.Pair;
-import org.apache.log4j.Logger;
+import com.jediterm.typeahead.Ascii;
+import com.jediterm.typeahead.TerminalTypeAheadManager;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.swing.*;
 import javax.swing.event.ChangeEvent;
@@ -37,7 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class TerminalPanel extends JComponent implements TerminalDisplay, TerminalActionProvider {
-  private static final Logger LOG = Logger.getLogger(TerminalPanel.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TerminalPanel.class);
   private static final long serialVersionUID = -1048763516632093014L;
 
   public static final double SCROLL_SPEED = 0.05;
@@ -52,6 +53,7 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
   protected Dimension myCharSize = new Dimension();
   private boolean myMonospaced;
   protected Dimension myTermSize = new Dimension(80, 24);
+  private boolean myInitialSizeSyncDone = false;
 
   private TerminalStarter myTerminalStarter = null;
 
@@ -116,6 +118,7 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
     enableInputMethods(true);
 
     terminalTextBuffer.addModelListener(this::repaint);
+    terminalTextBuffer.addTypeAheadModelListener(this::repaint);
   }
 
   void setTypeAheadManager(@NotNull TerminalTypeAheadManager typeAheadManager) {
@@ -294,6 +297,17 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
       }
     });
 
+    addHierarchyListener(new HierarchyListener() {
+      @Override
+      public void hierarchyChanged(HierarchyEvent e) {
+        // replace with com.intellij.util.ui.update.UiNotifyConnector#doWhenFirstShown when merged with intellij
+        if ((e.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) != 0 && isShowing()) {
+          SwingUtilities.invokeLater(() -> sizeTerminalFromComponent());
+          removeHierarchyListener(this);
+        }
+      }
+    });
+
     addFocusListener(new FocusAdapter() {
       @Override
       public void focusGained(FocusEvent e) {
@@ -308,14 +322,10 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
       }
     });
 
-    myBoundedRangeModel.addChangeListener(new
-
-                                                  ChangeListener() {
-                                                    public void stateChanged(final ChangeEvent e) {
-                                                      myClientScrollOrigin = myBoundedRangeModel.getValue();
-                                                      repaint();
-                                                    }
-                                                  });
+    myBoundedRangeModel.addChangeListener(e -> {
+      myClientScrollOrigin = myBoundedRangeModel.getValue();
+      repaint();
+    });
 
     createRepaintTimer();
   }
@@ -506,8 +516,18 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
     return myMouseMode != MouseMode.MOUSE_REPORTING_NONE;
   }
 
+  /**
+   * Scroll to bottom to ensure the cursor will be visible.
+   */
   private void scrollToBottom() {
-    myBoundedRangeModel.setValue(myTermSize.height);
+    // Scroll to bottom even if the cursor is on the last line, i.e. it's currently visible.
+    // This will address the cases when the scroll is fixed to show some history lines, Enter is hit and after
+    // Enter processing, the cursor will be pushed out of visible area unless scroll is reset to screen buffer.
+    int delta = 1;
+    int zeroBasedCursorY = myCursor.myCursorCoordinates.y - 1;
+    if (zeroBasedCursorY + delta >= myBoundedRangeModel.getValue() + myBoundedRangeModel.getExtent()) {
+      myBoundedRangeModel.setValue(0);
+    }
   }
 
   private void pageUp() {
@@ -579,9 +599,9 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
       if (myBracketedPasteMode) {
         text = "\u001b[200~" + text + "\u001b[201~";
       }
-      myTerminalStarter.sendString(text);
+      myTerminalStarter.sendString(text, true);
     } catch (RuntimeException e) {
-      LOG.info(e);
+      LOG.info("", e);
     }
   }
 
@@ -612,7 +632,8 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
       Dimension newSize = getTerminalSizeFromComponent();
       if (newSize != null) {
         JediTerminal.ensureTermMinimumSize(newSize);
-        if (!myTermSize.equals(newSize)) {
+        if (!myTermSize.equals(newSize) || !myInitialSizeSyncDone) {
+          myInitialSizeSyncDone = true;
           myTypeAheadManager.onResize();
           myTerminalStarter.postResize(newSize, RequestOrigin.User);
         }
@@ -645,7 +666,7 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
       Dimension pixelDimension = new Dimension(getPixelWidth(), getPixelHeight());
       setPreferredSize(pixelDimension);
       if (myTerminalPanelListener != null) {
-        myTerminalPanelListener.onPanelResize(origin);
+        SwingUtilities.invokeLater(() -> myTerminalPanelListener.onPanelResize(origin));
       }
       SwingUtilities.invokeLater(() -> updateScrolling(true));
     }
@@ -802,7 +823,7 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
       });
 
       int cursorY = myCursor.getCoordY();
-      if ((myClientScrollOrigin + getRowCount() > cursorY) && !hasUncommittedChars()) {
+      if (cursorY < getRowCount() && !hasUncommittedChars()) {
         int cursorX = myCursor.getCoordX();
         Pair<Character, TextStyle> sc = myTerminalTextBuffer.getStyledCharAt(cursorX, cursorY);
         String cursorChar = "" + sc.first;
@@ -922,9 +943,15 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
   }
 
   @Override
-  public TerminalColor getWindowBackground() {
+  public @Nullable TerminalColor getWindowForeground() {
+    Color windowForeground = getForeground();
+    return new TerminalColor(windowForeground.getRed(), windowForeground.getGreen(), windowForeground.getBlue());
+  }
+
+  @Override
+  public @Nullable TerminalColor getWindowBackground() {
     Color windowBackground = getBackground();
-    
+
     // Return RGB color because we don't have palette information outside of TerminalPanel.
     return new TerminalColor(windowBackground.getRed(), windowBackground.getGreen(), windowBackground.getBlue());
   }
@@ -1312,6 +1339,47 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
     mySelection = null;
   }
 
+  // should be called on EDT
+  public void scrollToShowAllOutput() {
+    myTerminalTextBuffer.lock();
+    try {
+      int historyLines = myTerminalTextBuffer.getHistoryLinesCount();
+      if (historyLines > 0) {
+        int termHeight = myTermSize.height;
+        myBoundedRangeModel.setRangeProperties(-historyLines, historyLines + termHeight, -historyLines,
+            termHeight, false);
+        TerminalModelListener modelListener = new TerminalModelListener() {
+          @Override
+          public void modelChanged() {
+            int zeroBasedCursorY = myCursor.myCursorCoordinates.y - 1;
+            if (zeroBasedCursorY + historyLines >= termHeight) {
+              myTerminalTextBuffer.removeModelListener(this);
+              SwingUtilities.invokeLater(() -> {
+                myTerminalTextBuffer.lock();
+                try {
+                  myBoundedRangeModel.setRangeProperties(0, myTermSize.height,
+                      -myTerminalTextBuffer.getHistoryLinesCount(), myTermSize.height, false);
+                } finally {
+                  myTerminalTextBuffer.unlock();
+                }
+              });
+            }
+          }
+        };
+        myTerminalTextBuffer.addModelListener(modelListener);
+        myBoundedRangeModel.addChangeListener(new ChangeListener() {
+          @Override
+          public void stateChanged(ChangeEvent e) {
+            myBoundedRangeModel.removeChangeListener(this);
+            myTerminalTextBuffer.removeModelListener(modelListener);
+          }
+        });
+      }
+    } finally {
+      myTerminalTextBuffer.unlock();
+    }
+  }
+
   private void updateScrolling(boolean forceUpdate) {
     int dy = scrollDy.getAndSet(0);
     if (dy == 0 && !forceUpdate) {
@@ -1379,7 +1447,15 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
     return new Rectangle(topLeft, new Dimension(myCharSize.width * cellInterval.getCellCount(), myCharSize.height));
   }
 
+  /**
+   * @deprecated use {@link #getVerticalScrollModel()} instead
+   */
+  @Deprecated
   public BoundedRangeModel getBoundedRangeModel() {
+    return myBoundedRangeModel;
+  }
+
+  public @NotNull BoundedRangeModel getVerticalScrollModel() {
     return myBoundedRangeModel;
   }
 
@@ -1466,7 +1542,7 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
 
   @Override
   public List<TerminalAction> getActions() {
-    return Lists.newArrayList(
+    return List.of(
             new TerminalAction(mySettingsProvider.getOpenUrlActionPresentation(), input -> {
               return openSelectionAsURL();
             }).withEnabledSupplier(this::selectionTextIsUrl),
@@ -1605,9 +1681,9 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
     myNextActionProvider = provider;
   }
 
-  private void processTerminalKeyPressed(KeyEvent e) {
+  private boolean processTerminalKeyPressed(KeyEvent e) {
     if (hasUncommittedChars()) {
-      return;
+      return false;
     }
 
     try {
@@ -1617,43 +1693,46 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
       // numLock does not change the code sent by keypad VK_DELETE
       // although it send the char '.'
       if (keycode == KeyEvent.VK_DELETE && keychar == '.') {
-        myTerminalStarter.sendBytes(new byte[]{'.'});
-        e.consume();
-        return;
+        myTerminalStarter.sendBytes(new byte[]{'.'}, true);
+        return true;
       }
       // CTRL + Space is not handled in KeyEvent; handle it manually
-      if (keychar == ' ' && (e.getModifiers() & InputEvent.CTRL_MASK) != 0) {
-        myTerminalStarter.sendBytes(new byte[]{Ascii.NUL});
-        e.consume();
-        return;
+      if (keychar == ' ' && (e.getModifiersEx() & InputEvent.CTRL_DOWN_MASK) != 0) {
+        myTerminalStarter.sendBytes(new byte[]{Ascii.NUL}, true);
+        return true;
       }
 
       final byte[] code = myTerminalStarter.getCode(keycode, e.getModifiers());
       if (code != null) {
-        myTerminalStarter.sendBytes(code);
-        e.consume();
+        myTerminalStarter.sendBytes(code, true);
         if (mySettingsProvider.scrollToBottomOnTyping() && isCodeThatScrolls(keycode)) {
           scrollToBottom();
         }
+        return true;
       }
-      else if (isAltPressedOnly(e) && Character.isDefined(keychar) && mySettingsProvider.altSendsEscape()) {
+      if (isAltPressedOnly(e) && Character.isDefined(keychar) && mySettingsProvider.altSendsEscape()) {
         // Cannot use e.getKeyChar() on macOS:
         //  Option+f produces e.getKeyChar()='ƒ' (402), but 'f' (102) is needed.
         //  Option+b produces e.getKeyChar()='∫' (8747), but 'b' (98) is needed.
-        myTerminalStarter.sendString(new String(new char[]{Ascii.ESC, (char) e.getKeyCode()}));
-        e.consume();
+        myTerminalStarter.sendString(new String(new char[]{Ascii.ESC, simpleMapKeyCodeToChar(e)}), true);
+        return true;
       }
-      else if (Character.isISOControl(keychar)) { // keys filtered out here will be processed in processTerminalKeyTyped
-        processCharacter(e);
+      if (Character.isISOControl(keychar)) { // keys filtered out here will be processed in processTerminalKeyTyped
+        return processCharacter(e);
       }
-    } catch (final Exception ex) {
+    }
+    catch (Exception ex) {
       LOG.error("Error sending pressed key to emulator", ex);
     }
-    finally {
-      if (e.isConsumed() && myTypeAheadManager != null) {
-        myTypeAheadManager.onKeyEvent(e);
-      }
+    return false;
+  }
+
+  private static char simpleMapKeyCodeToChar(@NotNull KeyEvent e) {
+    // zsh requires proper case of letter
+    if ((e.getModifiersEx() & InputEvent.SHIFT_DOWN_MASK) != 0) {
+      return Character.toUpperCase((char) e.getKeyCode());
     }
+    return Character.toLowerCase((char) e.getKeyCode());
   }
 
   private static boolean isAltPressedOnly(@NotNull KeyEvent e) {
@@ -1664,26 +1743,25 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
             (modifiersEx & InputEvent.SHIFT_DOWN_MASK) == 0;
   }
 
-  private void processCharacter(@NotNull KeyEvent e) {
+  private boolean processCharacter(@NotNull KeyEvent e) {
     if (isAltPressedOnly(e) && mySettingsProvider.altSendsEscape()) {
-      return;
+      return false;
     }
     char keyChar = e.getKeyChar();
-    int modifiers = e.getModifiers();
     final char[] obuffer;
     obuffer = new char[]{keyChar};
 
-    if (keyChar == '`' && (modifiers & InputEvent.META_MASK) != 0) {
+    if (keyChar == '`' && (e.getModifiersEx() & InputEvent.META_DOWN_MASK) != 0) {
       // Command + backtick is a short-cut on Mac OSX, so we shouldn't type anything
-      return;
+      return false;
     }
 
-    myTerminalStarter.sendString(new String(obuffer));
-    e.consume();
+    myTerminalStarter.sendString(new String(obuffer), true);
 
     if (mySettingsProvider.scrollToBottomOnTyping()) {
       scrollToBottom();
     }
+    return true;
   }
 
   private static boolean isCodeThatScrolls(int keycode) {
@@ -1701,39 +1779,41 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
             || keycode == KeyEvent.VK_PAGE_DOWN;
   }
 
-  private void processTerminalKeyTyped(KeyEvent e) {
+  private boolean processTerminalKeyTyped(KeyEvent e) {
     if (hasUncommittedChars()) {
-      return;
+      return false;
     }
 
-    final char keychar = e.getKeyChar();
-    if (!Character.isISOControl(keychar)) { // keys filtered out here will be processed in processTerminalKeyPressed
+    if (!Character.isISOControl(e.getKeyChar())) { // keys filtered out here will be processed in processTerminalKeyPressed
       try {
-        processCharacter(e);
-      } catch (final Exception ex) {
+        return processCharacter(e);
+      }
+      catch (Exception ex) {
         LOG.error("Error sending typed key to emulator", ex);
       }
-      finally {
-        if (e.isConsumed() && myTypeAheadManager != null) {
-          myTypeAheadManager.onKeyEvent(e);
-        }
-      }
     }
+    return false;
   }
 
   private class TerminalKeyHandler extends KeyAdapter {
 
+    private boolean myIgnoreNextKeyTypedEvent;
+
     public TerminalKeyHandler() {
     }
 
-    public void keyPressed(final KeyEvent e) {
-      if (!TerminalAction.processEvent(TerminalPanel.this, e)) {
-        processTerminalKeyPressed(e);
+    public void keyPressed(KeyEvent e) {
+      myIgnoreNextKeyTypedEvent = false;
+      if (TerminalAction.processEvent(TerminalPanel.this, e) || processTerminalKeyPressed(e)) {
+        e.consume();
+        myIgnoreNextKeyTypedEvent = true;
       }
     }
 
-    public void keyTyped(final KeyEvent e) {
-      processTerminalKeyTyped(e);
+    public void keyTyped(KeyEvent e) {
+      if (myIgnoreNextKeyTypedEvent || processTerminalKeyTyped(e)) {
+        e.consume();
+      }
     }
   }
 
@@ -1794,7 +1874,7 @@ public class TerminalPanel extends JComponent implements TerminalDisplay, Termin
         }
 
         if (sb.length() > 0) {
-          myTerminalStarter.sendString(sb.toString());
+          myTerminalStarter.sendString(sb.toString(), true);
         }
       }
     } else {

@@ -1,20 +1,18 @@
 package com.jediterm.terminal.ui;
 
-import com.google.common.base.Predicate;
-import com.google.common.collect.Lists;
+import com.jediterm.terminal.*;
 import com.jediterm.terminal.SubstringFinder.FindResult;
 import com.jediterm.terminal.SubstringFinder.FindResult.FindItem;
-import com.jediterm.terminal.*;
 import com.jediterm.terminal.debug.DebugBufferType;
-import com.jediterm.terminal.model.JediTerminal;
-import com.jediterm.terminal.model.StyleState;
-import com.jediterm.terminal.model.TerminalTextBuffer;
-import com.jediterm.terminal.model.TerminalTypeAheadManager;
+import com.jediterm.terminal.model.*;
 import com.jediterm.terminal.model.hyperlinks.HyperlinkFilter;
 import com.jediterm.terminal.model.hyperlinks.TextProcessing;
 import com.jediterm.terminal.ui.settings.SettingsProvider;
-import org.apache.log4j.Logger;
+import com.jediterm.typeahead.TerminalTypeAheadManager;
+import com.jediterm.typeahead.TypeAheadTerminalModel;
 import org.jetbrains.annotations.NotNull;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;
@@ -33,12 +31,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p/>
  */
 public class JediTermWidget extends JPanel implements TerminalSession, TerminalWidget, TerminalActionProvider {
-  private static final Logger LOG = Logger.getLogger(JediTermWidget.class);
+  private static final Logger LOG = LoggerFactory.getLogger(JediTermWidget.class);
 
   protected final TerminalPanel myTerminalPanel;
   protected final JScrollBar myScrollBar;
   protected final JediTerminal myTerminal;
   protected final AtomicBoolean mySessionRunning = new AtomicBoolean();
+  private final JediTermTypeAheadModel myTypeAheadTerminalModel;
   private final TerminalTypeAheadManager myTypeAheadManager;
   private SearchComponent myFindComponent;
   private final PreConnectHandler myPreConnectHandler;
@@ -74,7 +73,12 @@ public class JediTermWidget extends JPanel implements TerminalSession, TerminalW
 
     myTerminalPanel = createTerminalPanel(mySettingsProvider, styleState, terminalTextBuffer);
     myTerminal = new JediTerminal(myTerminalPanel, terminalTextBuffer, styleState);
-    myTypeAheadManager = new TerminalTypeAheadManager(terminalTextBuffer, myTerminal, settingsProvider);
+
+    myTypeAheadTerminalModel = new JediTermTypeAheadModel(myTerminal, terminalTextBuffer, settingsProvider);
+    myTypeAheadManager = new TerminalTypeAheadManager(myTypeAheadTerminalModel);
+    JediTermDebouncerImpl typeAheadDebouncer =
+      new JediTermDebouncerImpl(myTypeAheadManager::debounce, TerminalTypeAheadManager.MAX_TERMINAL_DELAY);
+    myTypeAheadManager.setClearPredictionsDebouncer(typeAheadDebouncer);
     myTerminalPanel.setTypeAheadManager(myTypeAheadManager);
 
     myTerminal.setModeEnabled(TerminalMode.AltSendsEscape, mySettingsProvider.altSendsEscape());
@@ -97,7 +101,7 @@ public class JediTermWidget extends JPanel implements TerminalSession, TerminalW
 
     add(myInnerPanel, BorderLayout.CENTER);
 
-    myScrollBar.setModel(myTerminalPanel.getBoundedRangeModel());
+    myScrollBar.setModel(myTerminalPanel.getVerticalScrollModel());
     mySessionRunning.set(false);
 
     myTerminalPanel.init(myScrollBar);
@@ -133,17 +137,28 @@ public class JediTermWidget extends JPanel implements TerminalSession, TerminalW
     return myTerminalPanel;
   }
 
+  public TerminalTypeAheadManager getTypeAheadManager() {
+    return myTypeAheadManager;
+  }
+
   public void setTtyConnector(@NotNull TtyConnector ttyConnector) {
     myTtyConnector = ttyConnector;
 
+    TypeAheadTerminalModel.ShellType shellType;
+    if (ttyConnector instanceof ProcessTtyConnector) {
+      List<String> commandLine = ((ProcessTtyConnector) myTtyConnector).getCommandLine();
+      shellType = TypeAheadTerminalModel.commandLineToShellType(commandLine);
+    } else {
+      shellType = TypeAheadTerminalModel.ShellType.Unknown;
+    }
+    myTypeAheadTerminalModel.setShellType(shellType);
     myTerminalStarter = createTerminalStarter(myTerminal, myTtyConnector);
     myTerminalPanel.setTerminalStarter(myTerminalStarter);
   }
 
   protected TerminalStarter createTerminalStarter(@NotNull JediTerminal terminal, @NotNull TtyConnector connector) {
-    return new TerminalStarter(terminal, connector, new TypeAheadTerminalDataStream(
-      new TtyBasedArrayDataStream(connector), myTypeAheadManager
-    ));
+    return new TerminalStarter(terminal, connector,
+      new TtyBasedArrayDataStream(connector, myTypeAheadManager::onTerminalStateChanged), myTypeAheadManager);
   }
 
   @Override
@@ -184,8 +199,8 @@ public class JediTermWidget extends JPanel implements TerminalSession, TerminalW
     return mySessionRunning.get();
   }
 
-  public String getBufferText(DebugBufferType type) {
-    return type.getValue(this);
+  public String getBufferText(DebugBufferType type, int stateIndex) {
+    return type.getValue(this, stateIndex);
   }
 
   @Override
@@ -244,13 +259,10 @@ public class JediTermWidget extends JPanel implements TerminalSession, TerminalW
 
   @Override
   public List<TerminalAction> getActions() {
-    return Lists.newArrayList(new TerminalAction(mySettingsProvider.getFindActionPresentation(),
-      new Predicate<KeyEvent>() {
-        @Override
-        public boolean apply(KeyEvent input) {
-          showFindText();
-          return true;
-        }
+    return List.of(new TerminalAction(mySettingsProvider.getFindActionPresentation(),
+      keyEvent -> {
+        showFindText();
+        return true;
       }).withMnemonicKey(KeyEvent.VK_F));
   }
 
@@ -375,9 +387,6 @@ public class JediTermWidget extends JPanel implements TerminalSession, TerminalW
         } catch (Exception e) {
         }
         mySessionRunning.set(false);
-        TerminalPanelListener terminalPanelListener = myTerminalPanel.getTerminalPanelListener();
-        if (terminalPanelListener != null)
-          terminalPanelListener.onSessionChanged(getCurrentSession());
         for (TerminalWidgetListener listener : myListeners) {
           listener.allSessionsClosed(JediTermWidget.this);
         }

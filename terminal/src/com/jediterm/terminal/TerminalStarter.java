@@ -2,8 +2,10 @@ package com.jediterm.terminal;
 
 import com.jediterm.terminal.emulator.Emulator;
 import com.jediterm.terminal.emulator.JediEmulator;
-import org.apache.log4j.Logger;
+import com.jediterm.typeahead.TerminalTypeAheadManager;
 import org.jetbrains.annotations.NotNull;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.awt.*;
 import java.io.IOException;
@@ -21,7 +23,7 @@ import java.util.function.BiConsumer;
  * @author traff
  */
 public class TerminalStarter implements TerminalOutputStream {
-  private static final Logger LOG = Logger.getLogger(TerminalStarter.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TerminalStarter.class);
 
   private final Emulator myEmulator;
 
@@ -29,13 +31,16 @@ public class TerminalStarter implements TerminalOutputStream {
 
   private final TtyConnector myTtyConnector;
 
+  private final TerminalTypeAheadManager myTypeAheadManager;
+
   private final ScheduledExecutorService myEmulatorExecutor = Executors.newSingleThreadScheduledExecutor();
 
-  public TerminalStarter(final Terminal terminal, final TtyConnector ttyConnector, TerminalDataStream dataStream) {
+  public TerminalStarter(final Terminal terminal, final TtyConnector ttyConnector, TerminalDataStream dataStream, TerminalTypeAheadManager typeAheadManager) {
     myTtyConnector = ttyConnector;
     myTerminal = terminal;
     myTerminal.setTerminalOutput(this);
     myEmulator = createEmulator(dataStream, terminal);
+    myTypeAheadManager = typeAheadManager;
   }
 
   protected JediEmulator createEmulator(TerminalDataStream dataStream, Terminal terminal) {
@@ -94,8 +99,16 @@ public class TerminalStarter implements TerminalOutputStream {
 
   @Override
   public void sendBytes(final byte[] bytes) {
+    sendBytes(bytes, false);
+  }
+
+  @Override
+  public void sendBytes(final byte[] bytes, boolean userInput) {
     execute(() -> {
       try {
+        if (userInput) {
+          TerminalTypeAheadManager.TypeAheadEvent.fromByteArray(bytes).forEach(myTypeAheadManager::onKeyEvent);
+        }
         myTtyConnector.write(bytes);
       }
       catch (IOException e) {
@@ -106,8 +119,17 @@ public class TerminalStarter implements TerminalOutputStream {
 
   @Override
   public void sendString(final String string) {
+    sendString(string, false);
+  }
+
+  @Override
+  public void sendString(final String string, boolean userInput) {
     execute(() -> {
       try {
+        if (userInput) {
+          TerminalTypeAheadManager.TypeAheadEvent.fromString(string).forEach(myTypeAheadManager::onKeyEvent);
+        }
+
         myTtyConnector.write(string);
       }
       catch (IOException e) {

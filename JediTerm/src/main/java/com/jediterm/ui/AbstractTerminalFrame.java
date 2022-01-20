@@ -1,27 +1,31 @@
 package com.jediterm.ui;
 
+import com.jediterm.app.JediTerm;
 import com.jediterm.terminal.RequestOrigin;
 import com.jediterm.terminal.TtyConnector;
 import com.jediterm.terminal.debug.BufferPanel;
 import com.jediterm.terminal.model.SelectionUtil;
-import com.jediterm.terminal.ui.*;
+import com.jediterm.terminal.ui.JediTermWidget;
+import com.jediterm.terminal.ui.TerminalPanelListener;
+import com.jediterm.terminal.ui.TerminalWidget;
 import com.jediterm.terminal.ui.settings.DefaultTabbedSettingsProvider;
 import com.jediterm.terminal.ui.settings.TabbedSettingsProvider;
 import com.jediterm.terminal.util.Pair;
-import org.apache.log4j.Level;
-import org.apache.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.util.logging.Level;
 
 
 public abstract class AbstractTerminalFrame {
-  public static final Logger LOG = Logger.getLogger(AbstractTerminalFrame.class);
+  public static final Logger LOG = LoggerFactory.getLogger(AbstractTerminalFrame.class);
 
   private JFrame myBufferFrame;
 
@@ -91,12 +95,12 @@ public abstract class AbstractTerminalFrame {
     final JMenu dm = new JMenu("Debug");
 
     JMenu logLevel = new JMenu("Set log level ...");
-    Level[] levels = new Level[] {Level.ALL, Level.DEBUG, Level.INFO, Level.WARN, Level.ERROR, Level.FATAL, Level.OFF};
+    Level[] levels = new Level[] {Level.ALL, Level.FINE, Level.INFO, Level.WARNING, Level.SEVERE, Level.OFF};
     for(final Level l : levels) {
       logLevel.add(new AbstractAction(l.toString()) {
         @Override
         public void actionPerformed(ActionEvent e) {
-          Logger.getRootLogger().setLevel(l);
+          java.util.logging.Logger.getLogger("").setLevel(l);
         }
       });
     }
@@ -129,6 +133,9 @@ public abstract class AbstractTerminalFrame {
 
   public JediTermWidget openSession(TerminalWidget terminal, TtyConnector ttyConnector) {
     JediTermWidget session = terminal.createTerminalSession(ttyConnector);
+    if (ttyConnector instanceof JediTerm.LoggingPtyProcessTtyConnector) {
+      ((JediTerm.LoggingPtyProcessTtyConnector) ttyConnector).setWidget(session);
+    }
     session.start();
     return session;
   }
@@ -137,12 +144,6 @@ public abstract class AbstractTerminalFrame {
 
   protected AbstractTerminalFrame() {
     AbstractTabbedTerminalWidget<? extends JediTermWidget> tabbedTerminalWidget = createTabbedTerminalWidget();
-    tabbedTerminalWidget.addTabListener(terminal -> {
-      AbstractTabs<?> tabs = tabbedTerminalWidget.getTerminalTabs();
-      if (tabs == null || tabs.getTabCount() == 0) {
-        System.exit(0);
-      }
-    });
     myTerminal = tabbedTerminalWidget;
 
     final JFrame frame = new JFrame("JediTerm");
@@ -165,6 +166,20 @@ public abstract class AbstractTerminalFrame {
 
     frame.setResizable(true);
 
+    tabbedTerminalWidget.addTabListener(new AbstractTabbedTerminalWidget.TabListener<>() {
+      @Override
+      public void tabClosed(JediTermWidget terminal) {
+        AbstractTabs<?> tabs = tabbedTerminalWidget.getTerminalTabs();
+        if (tabs == null || tabs.getTabCount() == 0) {
+          System.exit(0);
+        }
+      }
+
+      @Override
+      public void onSelectedTabChanged(@NotNull JediTermWidget terminal) {
+        frame.setTitle(terminal.getSessionName());
+      }
+    });
     myTerminal.setTerminalPanelListener(new TerminalPanelListener() {
       public void onPanelResize(@NotNull RequestOrigin origin) {
         if (origin == RequestOrigin.Remote) {
@@ -174,13 +189,8 @@ public abstract class AbstractTerminalFrame {
       }
 
       @Override
-      public void onSessionChanged(final TerminalSession currentSession) {
-        frame.setTitle(currentSession.getSessionName());
-      }
-
-      @Override
       public void onTitleChanged(String title) {
-        frame.setTitle(myTerminal.getCurrentSession().getSessionName());
+        frame.setTitle(title);
       }
     });
 

@@ -8,9 +8,10 @@ import com.jediterm.terminal.emulator.mouse.*;
 import com.jediterm.terminal.model.hyperlinks.LinkInfo;
 import com.jediterm.terminal.ui.TerminalCoordinates;
 import com.jediterm.terminal.util.CharUtils;
-import org.apache.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.swing.*;
 import java.awt.*;
@@ -30,7 +31,7 @@ import java.util.concurrent.CompletableFuture;
  * @author traff
  */
 public class JediTerminal implements Terminal, TerminalMouseListener, TerminalCoordinates {
-  private static final Logger LOG = Logger.getLogger(JediTerminal.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(JediTerminal.class.getName());
 
   private static final int MIN_WIDTH = 5;
   private static final int MIN_HEIGHT = 2;
@@ -53,6 +54,8 @@ public class JediTerminal implements Terminal, TerminalMouseListener, TerminalCo
   private final EnumSet<TerminalMode> myModes = EnumSet.noneOf(TerminalMode.class);
 
   private final TerminalKeyEncoder myTerminalKeyEncoder = new TerminalKeyEncoder();
+
+  private final Stack<String> myWindowTitlesStack = new Stack<>();
 
   private final Tabulator myTabulator;
 
@@ -255,7 +258,26 @@ public class JediTerminal implements Terminal, TerminalMouseListener, TerminalCo
   }
 
   @Override
-  public TerminalColor getWindowBackground() {
+  public void saveWindowTitleOnStack() {
+    String title = myDisplay.getWindowTitle();
+    myWindowTitlesStack.push(title);
+  }
+
+  @Override
+  public void restoreWindowTitleFromStack() {
+    if (!myWindowTitlesStack.empty()) {
+      String title = myWindowTitlesStack.pop();
+      myDisplay.setWindowTitle(title);
+    }
+  }
+
+  @Override
+  public @Nullable TerminalColor getWindowForeground() {
+    return myDisplay.getWindowForeground();
+  }
+
+  @Override
+  public @Nullable TerminalColor getWindowBackground() {
     return myDisplay.getWindowBackground();
   }
 
@@ -310,7 +332,7 @@ public class JediTerminal implements Terminal, TerminalMouseListener, TerminalCo
           }
           // Rest
           beginY = myCursorY;
-          endY = myTerminalHeight;
+          endY = myTerminalHeight - 1;
 
           break;
         case 1:
@@ -874,7 +896,7 @@ public class JediTerminal implements Terminal, TerminalMouseListener, TerminalCo
         cb = applyModifierKeys(event, cb);
 
         if (myTerminalOutput != null) {
-          myTerminalOutput.sendBytes(mouseReport(cb, x + 1, y + 1));
+          myTerminalOutput.sendBytes(mouseReport(cb, x + 1, y + 1), true);
         }
       }
     }
@@ -898,7 +920,7 @@ public class JediTerminal implements Terminal, TerminalMouseListener, TerminalCo
         cb = applyModifierKeys(event, cb);
 
         if (myTerminalOutput != null) {
-          myTerminalOutput.sendBytes(mouseReport(cb, x + 1, y + 1));
+          myTerminalOutput.sendBytes(mouseReport(cb, x + 1, y + 1), true);
         }
       }
     }
@@ -911,7 +933,7 @@ public class JediTerminal implements Terminal, TerminalMouseListener, TerminalCo
     }
     if (shouldSendMouseData(MouseMode.MOUSE_REPORTING_ALL_MOTION)) {
       if (myTerminalOutput != null) {
-        myTerminalOutput.sendBytes(mouseReport(MouseButtonCodes.RELEASE, x + 1, y + 1));
+        myTerminalOutput.sendBytes(mouseReport(MouseButtonCodes.RELEASE, x + 1, y + 1), true);
       }
     }
     myLastMotionReport = new Point(x, y);
@@ -930,7 +952,7 @@ public class JediTerminal implements Terminal, TerminalMouseListener, TerminalCo
         cb |= MouseButtonModifierFlags.MOUSE_BUTTON_MOTION_FLAG;
         cb = applyModifierKeys(event, cb);
         if (myTerminalOutput != null) {
-          myTerminalOutput.sendBytes(mouseReport(cb, x + 1, y + 1));
+          myTerminalOutput.sendBytes(mouseReport(cb, x + 1, y + 1), true);
         }
       }
     }
@@ -974,14 +996,14 @@ public class JediTerminal implements Terminal, TerminalMouseListener, TerminalCo
   @Override
   public void deviceStatusReport(String str) {
     if (myTerminalOutput != null) {
-      myTerminalOutput.sendString(str);
+      myTerminalOutput.sendString(str, false);
     }
   }
 
   @Override
   public void deviceAttributes(byte[] response) {
     if (myTerminalOutput != null) {
-      myTerminalOutput.sendBytes(response);
+      myTerminalOutput.sendBytes(response, false);
     }
   }
 
